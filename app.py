@@ -124,14 +124,16 @@ if uploaded_file:
                     break
 
             if not alocado:
-                # Todos seus horários já têm alguém → pega o mais escasso mesmo assim
-                h = horarios_priorizados[0]
-                alocacao[h].append(nome)
-                diretores[nome]["plantoes"] += 1
-                alertas.append(
-                    f"⚠️ {nome} foi alocado em {h.replace('_', ' ')} "
-                    f"(horário já ocupado — único disponível para garantir 1 plantão)."
-                )
+                # Todos seus horários já têm alguém → pega o mais escasso que ainda não o tem
+                for h in horarios_priorizados:
+                    if nome not in alocacao[h] and diretores[nome]["plantoes"] < 2:
+                        alocacao[h].append(nome)
+                        diretores[nome]["plantoes"] += 1
+                        alertas.append(
+                            f"⚠️ {nome} foi alocado em {h.replace('_', ' ')} "
+                            f"(horário já ocupado por outro — único disponível para garantir 1 plantão)."
+                        )
+                        break
 
         # ============================================================
         # FASE 2 — Preencher horários ainda vazios
@@ -154,11 +156,7 @@ if uploaded_file:
             ]
 
             if not candidatos:
-                # Todos que podem já têm 2 plantões → abre exceção apenas para preencher
-                candidatos = disponivel_em[horario]
-
-            if not candidatos:
-                continue  # Ninguém disponível para esse horário
+                continue  # Todos já têm 2 plantões ou ninguém disponível → alerta na fase 3
 
             # Prefere quem tem menos plantões; entre empatados, sorteia
             menor_qtd = min(diretores[n]["plantoes"] for n in candidatos)
