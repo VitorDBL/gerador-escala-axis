@@ -29,8 +29,7 @@ if uploaded_file:
     df = pd.read_csv(uploaded_file, encoding="utf-8", sep=",", engine="python")
     df.columns = df.columns.str.strip()
 
-    # Colunas dos dias no CSV (novo formato)
-    dias_col  = ["Segunda feira:", "Terça feira:", "Quarta feira:", "Quinta feira:", "Sexta feira:"]
+    dias_col   = ["Segunda feira:", "Terça feira:", "Quarta feira:", "Quinta feira:", "Sexta feira:"]
     dias_curto = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira"]
 
     horas = [
@@ -47,7 +46,6 @@ if uploaded_file:
 
     # ===============================
     # PARSE DA DISPONIBILIDADE
-    # Novo CSV usa ";" como separador
     # ===============================
     diretores = {}
 
@@ -61,7 +59,6 @@ if uploaded_file:
             if valor in ("não posso", "nan", ""):
                 continue
 
-            # Novo formato: horários separados por ";"
             horarios = [h.strip().strip('"') for h in valor.split(";") if h.strip()]
 
             for h in horarios:
@@ -70,7 +67,7 @@ if uploaded_file:
                     disponibilidade.append(chave)
 
         diretores[nome] = {
-            "disponibilidade": list(set(disponibilidade)),  # sem duplicatas
+            "disponibilidade": list(set(disponibilidade)),
             "plantoes": 0
         }
 
@@ -86,79 +83,89 @@ if uploaded_file:
         alocacao = {h: [] for h in todos_horarios}
         alertas = []
 
-        # Mapa: horário → quem pode ficar nele
+        # Mapa: horário → lista de quem pode ficar nele
         disponivel_em = {
             h: [n for n, d in diretores.items() if h in d["disponibilidade"]]
             for h in todos_horarios
         }
 
-        # ============================================================
-        # FASE 1 — Garantir pelo menos 1 plantão por pessoa
-        # Ordem: menor disponibilidade primeiro (mais difíceis de alocar)
-        # Dentro de cada pessoa: priorizar o horário com MENOS opções
-        # ============================================================
-        diretores_ordenados = sorted(
-            diretores.keys(),
-            key=lambda n: len(diretores[n]["disponibilidade"])
-        )
-
-        for nome in diretores_ordenados:
-            disponiveis = diretores[nome]["disponibilidade"]
-
-            if not disponiveis:
-                continue
-
-            # Ordena os horários disponíveis do mais escasso ao mais abundante
-            horarios_priorizados = sorted(
-                disponiveis,
-                key=lambda h: len(disponivel_em[h])
-            )
-
-            # Tenta horário sem ninguém ainda; se não tiver, pega o mais escasso
-            alocado = False
-            for h in horarios_priorizados:
-                if len(alocacao[h]) == 0:
-                    alocacao[h].append(nome)
-                    diretores[nome]["plantoes"] += 1
-                    alocado = True
-                    break
-
-            if not alocado:
-                # Todos seus horários já têm alguém → pega o mais escasso que ainda não o tem
-                for h in horarios_priorizados:
-                    if nome not in alocacao[h] and diretores[nome]["plantoes"] < 2:
-                        alocacao[h].append(nome)
-                        diretores[nome]["plantoes"] += 1
-                        alertas.append(
-                            f"⚠️ {nome} foi alocado em {h.replace('_', ' ')} "
-                            f"(horário já ocupado por outro — único disponível para garantir 1 plantão)."
-                        )
-                        break
-
-        # ============================================================
-        # FASE 2 — Preencher horários ainda vazios
-        # Ordem: horários com MENOS disponíveis primeiro
-        # Candidatos: quem pode e ainda tem < 2 plantões
-        # Desempate: quem tem menos plantões → escolha aleatória
-        # ============================================================
+        # Ordena todos os horários do mais escasso ao mais abundante (usado em todas as fases)
         horarios_por_escassez = sorted(
             todos_horarios,
             key=lambda h: len(disponivel_em[h])
         )
 
+        # ============================================================
+        # FASE 1A — Percorre horários do mais escasso ao mais abundante.
+        # Para cada horário ainda vazio, aloca o candidato disponível
+        # que ainda não tem plantão e tem MENOS disponibilidade total
+        # (mais difícil de encaixar depois). Limite: 2 plantões.
+        # ============================================================
         for horario in horarios_por_escassez:
             if len(alocacao[horario]) >= 1:
-                continue  # já preenchido
+                continue
 
+            # Só candidatos sem plantão ainda
             candidatos = [
                 n for n in disponivel_em[horario]
-                if diretores[n]["plantoes"] < 2
+                if diretores[n]["plantoes"] == 0
             ]
 
             if not candidatos:
-                continue  # Todos já têm 2 plantões ou ninguém disponível → alerta na fase 3
+                continue
 
-            # Prefere quem tem menos plantões; entre empatados, sorteia
+            # Prefere quem tem menos disponibilidade total
+            escolhido = min(candidatos, key=lambda n: len(diretores[n]["disponibilidade"]))
+            alocacao[horario].append(escolhido)
+            diretores[escolhido]["plantoes"] += 1
+
+        # ============================================================
+        # FASE 1B — Quem ainda não tem plantão (seus horários eram
+        # todos escassos e foram preenchidos por outros na 1A).
+        # Aloca no horário mais escasso disponível para ela, respeitando
+        # limite de 2 e sem duplicar a pessoa no mesmo horário.
+        # ============================================================
+        diretores_sem = [
+            n for n, d in diretores.items()
+            if d["plantoes"] == 0 and len(d["disponibilidade"]) > 0
+        ]
+        # Ordena por menor disponibilidade (mais difíceis primeiro)
+        diretores_sem.sort(key=lambda n: len(diretores[n]["disponibilidade"]))
+
+        for nome in diretores_sem:
+            horarios_candidatos = sorted(
+                diretores[nome]["disponibilidade"],
+                key=lambda h: len(disponivel_em[h])
+            )
+            for h in horarios_candidatos:
+                if nome not in alocacao[h] and diretores[nome]["plantoes"] < 2:
+                    alocacao[h].append(nome)
+                    diretores[nome]["plantoes"] += 1
+                    alertas.append(
+                        f"⚠️ {nome} alocado em {h.replace('_', ' ')} "
+                        f"(horário já ocupado — necessário para garantir 1 plantão)."
+                    )
+                    break
+
+        # ============================================================
+        # FASE 2 — Preencher horários ainda vazios com 2º plantão.
+        # Percorre do mais escasso ao mais abundante.
+        # Candidatos: disponíveis nesse horário com < 2 plantões.
+        # Desempate: quem tem menos plantões; entre empatados, sorteia.
+        # Limite absoluto: 2 plantões por pessoa, sem exceção.
+        # ============================================================
+        for horario in horarios_por_escassez:
+            if len(alocacao[horario]) >= 1:
+                continue
+
+            candidatos = [
+                n for n in disponivel_em[horario]
+                if diretores[n]["plantoes"] < 2 and n not in alocacao[horario]
+            ]
+
+            if not candidatos:
+                continue
+
             menor_qtd = min(diretores[n]["plantoes"] for n in candidatos)
             empatados = [n for n in candidatos if diretores[n]["plantoes"] == menor_qtd]
             escolhido = random.choice(empatados)
@@ -167,8 +174,8 @@ if uploaded_file:
             diretores[escolhido]["plantoes"] += 1
 
         # ============================================================
-        # FASE 3 — Alertar horários que ficaram vazios
-        # Ninguém será alocado além de 2 plantões
+        # FASE 3 — Alertar horários que ficaram vazios.
+        # Ninguém recebe mais de 2 plantões em nenhuma hipótese.
         # ============================================================
         for horario in horarios_por_escassez:
             if len(alocacao[horario]) >= 1:
@@ -178,14 +185,13 @@ if uploaded_file:
 
             if not candidatos_disponiveis:
                 alertas.append(
-                    f"🚫 Horário {horario.replace('_', ' ')} ficou vazio: "
-                    f"nenhum diretor marcou disponibilidade para ele."
+                    f"🚫 {horario.replace('_', ' ')}: nenhum diretor marcou disponibilidade."
                 )
             else:
                 nomes = ", ".join(candidatos_disponiveis)
                 alertas.append(
-                    f"🚫 Horário {horario.replace('_', ' ')} ficou vazio: "
-                    f"todos os diretores disponíveis ({nomes}) já atingiram o limite de 2 plantões."
+                    f"🚫 {horario.replace('_', ' ')}: ficou vazio — "
+                    f"todos os disponíveis ({nomes}) já têm 2 plantões."
                 )
 
         # ============================================================
@@ -201,11 +207,15 @@ if uploaded_file:
             if d["plantoes"] == 0 and len(d["disponibilidade"]) > 0
         ]
 
+        acima_limite = [
+            n for n, d in diretores.items()
+            if d["plantoes"] > 2
+        ]
+
         # ============================================================
         # MONTAR TABELA
         # ============================================================
         tabela = []
-
         for h in horas:
             linha = [h]
             for dia in dias_curto:
@@ -224,7 +234,11 @@ if uploaded_file:
         # ESTATÍSTICAS
         # ============================================================
         stats = pd.DataFrame([
-            {"Diretor": n, "Plantões": d["plantoes"], "Disponibilidades": len(d["disponibilidade"])}
+            {
+                "Diretor": n,
+                "Plantões": d["plantoes"],
+                "Disponibilidades": len(d["disponibilidade"])
+            }
             for n, d in diretores.items()
         ]).sort_values("Plantões", ascending=False)
 
@@ -234,25 +248,21 @@ if uploaded_file:
         # ============================================================
         # EXIBIR ALERTAS
         # ============================================================
+        if acima_limite:
+            st.error("🚨 BUG: diretores com mais de 2 plantões (não deveria acontecer): " + ", ".join(acima_limite))
+
         if sem_disponibilidade:
-            st.error(
-                "🚫 Sem disponibilidade alguma (não receberão plantão): "
-                + ", ".join(sem_disponibilidade)
-            )
+            st.error("🚫 Sem disponibilidade alguma (não receberão plantão): " + ", ".join(sem_disponibilidade))
 
         if sem_plantao:
-            st.error(
-                "🚨 Tinham disponibilidade mas ficaram sem plantão: "
-                + ", ".join(sem_plantao)
-                + " — verifique se havia conflitos."
-            )
+            st.error("🚨 Com disponibilidade mas sem plantão: " + ", ".join(sem_plantao))
 
         if alertas:
-            st.warning("⚠️ Ajustes realizados durante a geração:")
+            st.warning("⚠️ Avisos da geração:")
             for a in alertas:
                 st.write("-", a)
 
-        if not sem_disponibilidade and not sem_plantao and not alertas:
+        if not sem_disponibilidade and not sem_plantao and not alertas and not acima_limite:
             st.success("✅ Escala gerada sem conflitos!")
 
         # ============================================================
