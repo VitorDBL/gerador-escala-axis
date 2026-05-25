@@ -149,7 +149,55 @@ if uploaded_file:
 
             return False  # nenhum candidato funcionou
 
-        backtrack(0)
+        with st.status("⚙️ Gerando escala...", expanded=True) as status:
+            st.write("🔍 Analisando disponibilidades...")
+            total = len([h for h in horarios_ordenados if len(disponivel_em[h]) > 0])
+
+            progresso = st.progress(0, text="Iniciando alocação...")
+            contador = [0]
+
+            _backtrack_original = backtrack
+
+            def backtrack_com_progresso(idx):
+                while idx < len(horarios_ordenados) and len(disponivel_em[horarios_ordenados[idx]]) == 0:
+                    idx += 1
+                if idx == len(horarios_ordenados):
+                    return True
+
+                horario = horarios_ordenados[idx]
+                candidatos = [n for n in disponivel_em[horario] if plantoes[n] < 2]
+                if not candidatos:
+                    return False
+
+                candidatos.sort(key=lambda n: (plantoes[n], len(diretores[n]["disponibilidade"])))
+                grupos = {}
+                for n in candidatos:
+                    k = (plantoes[n], len(diretores[n]["disponibilidade"]))
+                    grupos.setdefault(k, []).append(n)
+                for g in grupos.values():
+                    random.shuffle(g)
+                candidatos = [n for k in sorted(grupos) for n in grupos[k]]
+
+                for escolhido in candidatos:
+                    alocacao[horario].append(escolhido)
+                    plantoes[escolhido] += 1
+
+                    contador[0] += 1
+                    pct = min(int((contador[0] / max(total, 1)) * 100), 99)
+                    progresso.progress(pct, text=f"Alocando horários... ({pct}%)")
+
+                    if backtrack_com_progresso(idx + 1):
+                        return True
+
+                    alocacao[horario].remove(escolhido)
+                    plantoes[escolhido] -= 1
+
+                return False
+
+            st.write("📅 Executando alocação com backtracking...")
+            backtrack_com_progresso(0)
+            progresso.progress(100, text="Concluído!")
+            status.update(label="✅ Escala gerada!", state="complete", expanded=False)
 
         # Copia plantões finais de volta para a estrutura original
         for nome in diretores:
