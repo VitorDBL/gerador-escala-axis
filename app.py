@@ -121,8 +121,20 @@ if uploaded_file:
             if not candidatos:
                 return False  # beco sem saída → backtrack
 
-            # Embaralha para variar a escala a cada clique
-            random.shuffle(candidatos)
+            # Prioriza quem tem menos disponibilidades totais (mais "raro") e depois
+            # quem já tem menos plantões — garante que ninguém com 1 slot fique de fora
+            candidatos.sort(key=lambda n: (
+                plantoes[n],
+                len(diretores[n]["disponibilidade"])
+            ))
+            # Shuffle leve dentro de candidatos com mesmo score para variar a escala
+            grupos = {}
+            for n in candidatos:
+                k = (plantoes[n], len(diretores[n]["disponibilidade"]))
+                grupos.setdefault(k, []).append(n)
+            for g in grupos.values():
+                random.shuffle(g)
+            candidatos = [n for k in sorted(grupos) for n in grupos[k]]
 
             for escolhido in candidatos:
                 alocacao[horario].append(escolhido)
