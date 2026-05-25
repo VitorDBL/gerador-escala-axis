@@ -81,7 +81,6 @@ if uploaded_file:
             diretores[nome]["plantoes"] = 0
 
         alocacao = {h: [] for h in todos_horarios}
-        alertas = []
 
         # Mapa: horário → candidatos disponíveis
         disponivel_em = {
@@ -95,39 +94,26 @@ if uploaded_file:
             key=lambda h: len(disponivel_em[h])
         )
 
-        # Contagem de plantões mutável durante o backtracking
         plantoes = {nome: 0 for nome in diretores}
 
+        # ============================================================
+        # BACKTRACKING PURO — sem nenhuma chamada de UI aqui dentro
+        # ============================================================
         def backtrack(idx):
-            """
-            Tenta preencher horarios_ordenados[idx:] usando backtracking.
-            Retorna True se encontrou solução completa, False se não há saída.
-            """
-            # Pula horários sem nenhum disponível (impossíveis de preencher)
             while idx < len(horarios_ordenados) and len(disponivel_em[horarios_ordenados[idx]]) == 0:
                 idx += 1
 
             if idx == len(horarios_ordenados):
-                return True  # todos os horários tratados
+                return True
 
             horario = horarios_ordenados[idx]
 
-            # Candidatos: disponíveis nesse horário com < 2 plantões
-            candidatos = [
-                n for n in disponivel_em[horario]
-                if plantoes[n] < 2
-            ]
-
+            candidatos = [n for n in disponivel_em[horario] if plantoes[n] < 2]
             if not candidatos:
-                return False  # beco sem saída → backtrack
+                return False
 
-            # Prioriza quem tem menos disponibilidades totais (mais "raro") e depois
-            # quem já tem menos plantões — garante que ninguém com 1 slot fique de fora
-            candidatos.sort(key=lambda n: (
-                plantoes[n],
-                len(diretores[n]["disponibilidade"])
-            ))
-            # Shuffle leve dentro de candidatos com mesmo score para variar a escala
+            # Prioriza quem tem menos disponibilidades (mais raro) e menos plantões
+            candidatos.sort(key=lambda n: (plantoes[n], len(diretores[n]["disponibilidade"])))
             grupos = {}
             for n in candidatos:
                 k = (plantoes[n], len(diretores[n]["disponibilidade"]))
@@ -141,63 +127,16 @@ if uploaded_file:
                 plantoes[escolhido] += 1
 
                 if backtrack(idx + 1):
-                    return True  # solução encontrada, propaga
+                    return True
 
-                # Desfaz e tenta o próximo candidato
                 alocacao[horario].remove(escolhido)
                 plantoes[escolhido] -= 1
 
-            return False  # nenhum candidato funcionou
+            return False
 
-        with st.status("⚙️ Gerando escala...", expanded=True) as status:
-            st.write("🔍 Analisando disponibilidades...")
-            total = len([h for h in horarios_ordenados if len(disponivel_em[h]) > 0])
-
-            progresso = st.progress(0, text="Iniciando alocação...")
-            contador = [0]
-
-            _backtrack_original = backtrack
-
-            def backtrack_com_progresso(idx):
-                while idx < len(horarios_ordenados) and len(disponivel_em[horarios_ordenados[idx]]) == 0:
-                    idx += 1
-                if idx == len(horarios_ordenados):
-                    return True
-
-                horario = horarios_ordenados[idx]
-                candidatos = [n for n in disponivel_em[horario] if plantoes[n] < 2]
-                if not candidatos:
-                    return False
-
-                candidatos.sort(key=lambda n: (plantoes[n], len(diretores[n]["disponibilidade"])))
-                grupos = {}
-                for n in candidatos:
-                    k = (plantoes[n], len(diretores[n]["disponibilidade"]))
-                    grupos.setdefault(k, []).append(n)
-                for g in grupos.values():
-                    random.shuffle(g)
-                candidatos = [n for k in sorted(grupos) for n in grupos[k]]
-
-                for escolhido in candidatos:
-                    alocacao[horario].append(escolhido)
-                    plantoes[escolhido] += 1
-
-                    contador[0] += 1
-                    pct = min(int((contador[0] / max(total, 1)) * 100), 99)
-                    progresso.progress(pct, text=f"Alocando horários... ({pct}%)")
-
-                    if backtrack_com_progresso(idx + 1):
-                        return True
-
-                    alocacao[horario].remove(escolhido)
-                    plantoes[escolhido] -= 1
-
-                return False
-
-            st.write("📅 Executando alocação com backtracking...")
-            backtrack_com_progresso(0)
-            progresso.progress(100, text="Concluído!")
-            status.update(label="✅ Escala gerada!", state="complete", expanded=False)
+        # Spinner simples enquanto processa — sem atualizar UI no meio do loop
+        with st.spinner("⚙️ Gerando escala, aguarde..."):
+            backtrack(0)
 
         # Copia plantões finais de volta para a estrutura original
         for nome in diretores:
@@ -206,6 +145,8 @@ if uploaded_file:
         # ============================================================
         # ALERTAS FINAIS
         # ============================================================
+        alertas = []
+
         sem_disponibilidade = [
             n for n, d in diretores.items()
             if len(d["disponibilidade"]) == 0
