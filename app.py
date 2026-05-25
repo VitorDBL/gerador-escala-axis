@@ -51,23 +51,19 @@ if uploaded_file:
 
     for _, row in df.iterrows():
         nome = str(row.iloc[1]).strip()
-        disponibilidade = []
+        disponibilidade = set()
 
         for i, col in enumerate(dias_col):
             valor = str(row[col]).strip().lower()
-
             if valor in ("não posso", "nan", ""):
                 continue
-
-            horarios = [h.strip().strip('"') for h in valor.split(";") if h.strip()]
-
-            for h in horarios:
-                chave = f"{dias_curto[i]}_{h}"
+            for h in valor.split(";"):
+                chave = f"{dias_curto[i]}_{h.strip().strip(chr(34))}"
                 if chave in todos_horarios:
-                    disponibilidade.append(chave)
+                    disponibilidade.add(chave)
 
         diretores[nome] = {
-            "disponibilidade": list(set(disponibilidade)),
+            "disponibilidade": disponibilidade,   # agora é set → lookup O(1)
             "plantoes": 0
         }
 
@@ -76,102 +72,105 @@ if uploaded_file:
     # ===============================
     if st.button("🔁 Gerar Nova Escala"):
 
-        # RESET
         for nome in diretores:
             diretores[nome]["plantoes"] = 0
 
-        alocacao = {h: [] for h in todos_horarios}
+        # Mapa: horário → lista de índices de diretores disponíveis
+        nomes      = list(diretores.keys())          # índice estável
+        disp_set   = [diretores[n]["disponibilidade"] for n in nomes]
+        n_disp     = [len(d) for d in disp_set]      # total de disponibilidades por pessoa
 
-        # Mapa: horário → candidatos disponíveis
         disponivel_em = {
-            h: [n for n, d in diretores.items() if h in d["disponibilidade"]]
+            h: [i for i, d in enumerate(disp_set) if h in d]
             for h in todos_horarios
         }
 
-        # Ordena horários do mais escasso ao mais abundante (fixo)
+        # Ordena horários: mais escassos primeiro (MRV heuristic)
         horarios_ordenados = sorted(
             todos_horarios,
             key=lambda h: len(disponivel_em[h])
         )
+        # Filtra impossíveis logo de cara
+        horarios_validos = [h for h in horarios_ordenados if disponivel_em[h]]
 
-        plantoes = {nome: 0 for nome in diretores}
+        plantoes   = [0] * len(nomes)       # int array → acesso O(1)
+        alocacao   = {h: -1 for h in todos_horarios}   # -1 = vazio
 
         # ============================================================
-        # BACKTRACKING PURO — sem nenhuma chamada de UI aqui dentro
+        # BACKTRACKING ITERATIVO — sem recursão, sem list.remove()
         # ============================================================
-        def backtrack(idx):
-            while idx < len(horarios_ordenados) and len(disponivel_em[horarios_ordenados[idx]]) == 0:
-                idx += 1
-
-            if idx == len(horarios_ordenados):
-                return True
-
-            horario = horarios_ordenados[idx]
-
-            candidatos = [n for n in disponivel_em[horario] if plantoes[n] < 2]
-            if not candidatos:
-                return False
-
-            # Prioriza quem tem menos disponibilidades (mais raro) e menos plantões
-            candidatos.sort(key=lambda n: (plantoes[n], len(diretores[n]["disponibilidade"])))
-            grupos = {}
-            for n in candidatos:
-                k = (plantoes[n], len(diretores[n]["disponibilidade"]))
-                grupos.setdefault(k, []).append(n)
-            for g in grupos.values():
-                random.shuffle(g)
-            candidatos = [n for k in sorted(grupos) for n in grupos[k]]
-
-            for escolhido in candidatos:
-                alocacao[horario].append(escolhido)
-                plantoes[escolhido] += 1
-
-                if backtrack(idx + 1):
-                    return True
-
-                alocacao[horario].remove(escolhido)
-                plantoes[escolhido] -= 1
-
-            return False
-
-        # Spinner simples enquanto processa — sem atualizar UI no meio do loop
         with st.spinner("⚙️ Gerando escala, aguarde..."):
-            backtrack(0)
 
-        # Copia plantões finais de volta para a estrutura original
-        for nome in diretores:
-            diretores[nome]["plantoes"] = plantoes[nome]
+            N      = len(horarios_validos)
+            stack  = [0] * N          # stack[i] = próximo candidato a tentar no passo i
+            idx    = 0
+
+            # Pré-sorteia candidatos para cada slot (uma vez só)
+            candidatos_slot = []
+            for h in horarios_validos:
+                cands = disponivel_em[h][:]
+                # Ordena: menos disponibilidades totais e menos plantões atuais
+                # (plantões = 0 aqui; vai ser re-ordenado dinamicamente abaixo)
+                random.shuffle(cands)
+                candidatos_slot.append(cands)
+
+            while idx < N:
+                h      = horarios_validos[idx]
+                cands  = candidatos_slot[idx]
+
+                # Ordena dinamicamente pelo estado atual de plantões + raridade
+                # Só reordena quando entramos neste slot pela primeira vez (stack == 0)
+                if stack[idx] == 0:
+                    cands.sort(key=lambda i: (plantoes[i], n_disp[i]))
+
+                encontrou = False
+                while stack[idx] < len(cands):
+                    c = cands[stack[idx]]
+                    stack[idx] += 1
+                    if plantoes[c] < 2:
+                        alocacao[h] = c
+                        plantoes[c] += 1
+                        idx += 1
+                        encontrou = True
+                        break
+
+                if not encontrou:
+                    # Backtrack
+                    alocacao[h] = -1
+                    stack[idx]  = 0
+                    if idx == 0:
+                        break   # sem solução
+                    idx -= 1
+                    h_prev = horarios_validos[idx]
+                    c_prev = alocacao[h_prev]
+                    if c_prev != -1:
+                        plantoes[c_prev] -= 1
+                    alocacao[h_prev] = -1
+
+        # Copia plantões finais para a estrutura original
+        for i, nome in enumerate(nomes):
+            diretores[nome]["plantoes"] = plantoes[i]
 
         # ============================================================
         # ALERTAS FINAIS
         # ============================================================
         alertas = []
 
-        sem_disponibilidade = [
-            n for n, d in diretores.items()
-            if len(d["disponibilidade"]) == 0
-        ]
+        sem_disponibilidade = [n for n in nomes if not diretores[n]["disponibilidade"]]
+        sem_plantao         = [n for n in nomes if diretores[n]["plantoes"] == 0 and diretores[n]["disponibilidade"]]
+        acima_limite        = [n for n in nomes if diretores[n]["plantoes"] > 2]
 
-        sem_plantao = [
-            n for n, d in diretores.items()
-            if d["plantoes"] == 0 and len(d["disponibilidade"]) > 0
-        ]
+        for h in horarios_validos:
+            if alocacao[h] == -1:
+                disponiveis = ", ".join(nomes[i] for i in disponivel_em[h])
+                alertas.append(
+                    f"🚫 {h.replace('_', ' ')}: ficou vazio — "
+                    f"todos os disponíveis ({disponiveis}) já têm 2 plantões."
+                )
 
-        acima_limite = [
-            n for n, d in diretores.items()
-            if d["plantoes"] > 2
-        ]
-
-        for h in horarios_ordenados:
-            if not alocacao[h]:
-                if not disponivel_em[h]:
-                    alertas.append(f"🚫 {h.replace('_', ' ')}: nenhum diretor marcou disponibilidade.")
-                else:
-                    nomes = ", ".join(disponivel_em[h])
-                    alertas.append(
-                        f"🚫 {h.replace('_', ' ')}: ficou vazio — "
-                        f"todos os disponíveis ({nomes}) já têm 2 plantões."
-                    )
+        for h in todos_horarios:
+            if not disponivel_em[h]:
+                alertas.append(f"🚫 {h.replace('_', ' ')}: nenhum diretor marcou disponibilidade.")
 
         # ============================================================
         # MONTAR TABELA
@@ -181,11 +180,11 @@ if uploaded_file:
             linha = [h]
             for dia in dias_curto:
                 chave = f"{dia}_{h}"
-                nomes = ", ".join(alocacao[chave]) if alocacao[chave] else "—"
-                linha.append(nomes)
+                i = alocacao[chave]
+                linha.append(nomes[i] if i != -1 else "—")
             tabela.append(linha)
 
-        colunas = ["Horário"] + dias_curto
+        colunas  = ["Horário"] + dias_curto
         df_final = pd.DataFrame(tabela, columns=colunas)
 
         st.subheader("📊 Escala Gerada")
@@ -197,10 +196,10 @@ if uploaded_file:
         stats = pd.DataFrame([
             {
                 "Diretor": n,
-                "Plantões": d["plantoes"],
-                "Disponibilidades": len(d["disponibilidade"])
+                "Plantões": diretores[n]["plantoes"],
+                "Disponibilidades": len(diretores[n]["disponibilidade"])
             }
-            for n, d in diretores.items()
+            for n in nomes
         ]).sort_values("Plantões", ascending=False)
 
         st.subheader("📈 Estatísticas")
@@ -210,19 +209,15 @@ if uploaded_file:
         # EXIBIR ALERTAS
         # ============================================================
         if acima_limite:
-            st.error("🚨 BUG: diretores com mais de 2 plantões (não deveria acontecer): " + ", ".join(acima_limite))
-
+            st.error("🚨 BUG: diretores com mais de 2 plantões: " + ", ".join(acima_limite))
         if sem_disponibilidade:
-            st.error("🚫 Sem disponibilidade alguma (não receberão plantão): " + ", ".join(sem_disponibilidade))
-
+            st.error("🚫 Sem disponibilidade alguma: " + ", ".join(sem_disponibilidade))
         if sem_plantao:
             st.error("🚨 Com disponibilidade mas sem plantão: " + ", ".join(sem_plantao))
-
         if alertas:
             st.warning("⚠️ Avisos da geração:")
             for a in alertas:
                 st.write("-", a)
-
         if not sem_disponibilidade and not sem_plantao and not alertas and not acima_limite:
             st.success("✅ Escala gerada sem conflitos!")
 
